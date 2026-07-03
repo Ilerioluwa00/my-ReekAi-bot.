@@ -1,56 +1,85 @@
-import logging
-import threading
-from flask import Flask
+import requests
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# 1. Setup Flask web server for Render
-web_app = Flask(__name__)
+# 1. Live Weather and Time Data Mapping
+CITIES = {
+    "nigeria": {"name": "Lagos", "lat": 6.52, "lon": 3.37, "zone": "Africa/Lagos", "flag": "🇳🇬"},
+    "usa": {"name": "New York", "lat": 40.71, "lon": -74.00, "zone": "America/New_York", "flag": "🇺🇸"},
+    "china": {"name": "Shanghai", "lat": 31.23, "lon": 121.47, "zone": "Asia/Shanghai", "flag": "🇨🇳"},
+    "south korea": {"name": "Seoul", "lat": 37.56, "lon": 126.97, "zone": "Asia/Seoul", "flag": "🇰🇷"},
+    "japan": {"name": "Tokyo", "lat": 35.67, "lon": 139.65, "zone": "Asia/Tokyo", "flag": "🇯🇵"},
+    "india": {"name": "New Delhi", "lat": 28.61, "lon": 77.20, "zone": "Asia/Kolkata", "flag": "🇮🇳"}
+}
 
-@web_app.route('/')
-def home():
-    return "🤖 Bot is running 24/7!"
+# 2. Live News Feed Mapping (Using RSS-to-JSON streams)
+NEWS_FEEDS = {
+    "ukraine": "https://api.rss2json.com/v1/api.json?rss_url=https://news.un.org/feed/subscribe/en/news/region/europe/feed/rss.xml",
+    "middle east": "https://api.rss2json.com/v1/api.json?rss_url=https://news.un.org/feed/subscribe/en/news/region/middle-east/feed/rss.xml",
+    "crypto": "https://api.rss2json.com/v1/api.json?rss_url=https://www.coindesk.com/arc/outboundfeeds/rss/",
+    "usa": "https://api.rss2json.com/v1/api.json?rss_url=https://www.bostonglobe.com/rss/nation"
+}
 
-def run_flask():
-    # Render provides a PORT environment variable automatically
-    import os
-    port = int(os.environ.get("PORT", 10000))
-    web_app.run(host='0.0.0.0', port=port)
-
-# 2. Setup Telegram Bot Logic
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Hello! I am your mobile-built bot. Send me a message!")
-
-# This handles your custom text replies!
 async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text.lower() # Converts to lowercase to catch "Hello" or "HELLO"
+    user_text = update.message.text.lower().strip()
     
+    # Custom baseline greeting
     if user_text == "hello":
-        reply_text = "how are you doing? I'm good."
-    else:
-        reply_text = f"🤖 You said: '{update.message.text}'"
-        
-    await update.message.reply_text(reply_text)
+        await update.message.reply_text("🤖 Reekiel AI: How are you doing? I'm ready to assist.")
+        return
 
-def main():
-    # Put your actual token from BotFather inside the quotes below
-    TOKEN = '8385196888:AAFYrzi-v5Lwv_19vNaLwfs95wthEoX5EZY'
-    
-    # Start the Flask web server in a separate background thread
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.daemon = True
-    flask_thread.start()
-    
-    # Start the Telegram bot application
-    app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, reply_handler))
-    
-    print("⚡ Bot and Web Server are starting...")
-    app.run_polling()
+    # Check for Live News requests (e.g., "news about crypto")
+    if "news" in user_text:
+        for category, url in NEWS_FEEDS.items():
+            if category in user_text:
+                try:
+                    response = requests.get(url).json()
+                    articles = response.get("items", [])[:3] # Get top 3 headlines
+                    
+                    if not articles:
+                        await update.message.reply_text("📰 Reekiel AI: No recent updates found for this topic right now.")
+                        return
+                        
+                    reply = f"🌍 **Reekiel AI Live News: {category.upper()}**\n\n"
+                    for item in articles:
+                        reply += f"🔹 *{item['title']}*\n🔗 {item['link']}\n\n"
+                    
+                    await update.message.reply_text(reply, parse_mode="Markdown")
+                    return
+                except Exception:
+                    await update.message.reply_text("⚠️ Reekiel AI: I had trouble connecting to the news network.")
+                    return
+
+    # Check for Live Weather and Time requests
+    for country, info in CITIES.items():
+        if country in user_text:
+            if "weather" in user_text:
+                try:
+                    url = f"https://api.open-meteo.com/v1/forecast?latitude={info['lat']}&longitude={info['lon']}&current_weather=true"
+                    response = requests.get(url).json()
+                    temp = response["current_weather"]["temperature"]
+                    await update.message.reply_text(f"{info['flag']} Live Weather for {info['name']}:\n🌡️ Temperature: {temp}°C")
+                    return
+                except Exception:
+                    await update.message.reply_text("⚠️ Reekiel AI: Couldn't fetch live weather data.")
+                    return
+                
+            elif "time" in user_text:
+                current_time = datetime.now(ZoneInfo(info["zone"])).strftime("%I:%M %p")
+                await update.message.reply_text(f"{info['flag']} The current time in {info['name']} is {current_time}.")
+                return
+
+    # Default fallback message
+    await update.message.reply_text(f"🤖 Reekiel AI: You said '{update.message.text}'")
 
 if __name__ == '__main__':
-    main()
+    # 🔴 PASTE YOUR TELEGRAM BOT TOKEN BETWEEN THE QUOTES BELOW 🔴
+    TOKEN = "8385196888:AAFYrzi-v5Lwv_19vNaLwfs95wthEoX5EZY"
     
+    application = Application.builder().token(TOKEN).build()
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, reply_handler))
+    
+    print("Running python bot.py")
+    application.run_polling()
